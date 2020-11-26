@@ -354,6 +354,106 @@ Vinecop::select_families(const Eigen::MatrixXd& data,
   select(data, controls);
 }
 
+//! @brief Fits the parameters of a pre-specified vine copula model.
+//!
+//!
+//! @param data \f$ n \times (d + k) \f$ or \f$ n \times 2d \f$ matrix of
+//!   observations, where \f$ k \f$ is the number of discrete variables.
+//! @param controls The controls to the algorithm (see FitControlsVinecop).
+inline void
+Vinecop::fit_parameters(const Eigen::MatrixXd& data,
+                        const FitControlsVinecop& controls)
+{
+  check_data(data);
+  auto u = collapse_data(data);
+
+  // info about the vine structure (reverse rows (!) for more natural indexing)
+  size_t trunc_lvl = rvine_structure_.get_trunc_lvl();
+  if (trunc_lvl == 0)
+    return;
+  auto order = rvine_structure_.get_order();
+  auto disc_cols = tools_select::get_disc_cols(var_types_);
+  size_t n = u.rows();
+
+  // temporary storage objects (all data must be in (0, 1))
+  Eigen::MatrixXd hfunc1, hfunc2, hfunc1_sub, hfunc2_sub;
+  hfunc1 = Eigen::MatrixXd::Zero(n, d_);
+  hfunc2 = Eigen::MatrixXd::Zero(n, d_);
+  if (get_n_discrete() > 0) {
+    hfunc1_sub = hfunc1;
+    hfunc2_sub = hfunc2;
+  }
+
+  // set up thread pool
+  auto num_threads = controls.get_num_threads();
+  tools_thread::ThreadPool pool((num_threads == 1) ? 0 : num_threads);
+  auto bicop_controls = controls.get_fit_controls_bicop();
+
+  // fill first row of hfunc2 matrix with observed data;
+  // points have to be reordered to correspond to natural order
+  for (size_t j = 0; j < d_; ++j) {
+    hfunc2.col(j) = u.col(order[j] - 1);
+    if (var_types_[order[j] - 1] == "d") {
+      hfunc2_sub.col(j) = u.col(d_ + disc_cols[order[j] - 1]);
+    }
+  }
+
+  for (size_t tree = 0; tree < trunc_lvl; ++tree) {
+    tools_interface::check_user_interrupt();
+    auto fit_edge = [&](size_t edge) {
+      tools_interface::check_user_interrupt(edge % 5 == 0);
+      // extract evaluation point from hfunction matrices (have been
+      // computed in previous tree level)
+      Bicop* edge_copula = &pair_copulas_[tree][edge];
+      auto var_types = edge_copula->get_var_types();
+      size_t m = rvine_structure_.min_array(tree, edge);
+
+      auto u_e = Eigen::MatrixXd(n, 2), u_e_sub = Eigen::MatrixXd(n, 2);
+      u_e.col(0) = hfunc2.col(edge);
+      if (m == rvine_structure_.struct_array(tree, edge, true)) {
+        u_e.col(1) = hfunc2.col(m - 1);
+      } else {
+        u_e.col(1) = hfunc1.col(m - 1);
+      }
+
+      if ((var_types[0] == "d") | (var_types[1] == "d")) {
+        u_e.conservativeResize(n, 4);
+        u_e.col(2) = hfunc2_sub.col(edge);
+        if (m == rvine_structure_.struct_array(tree, edge, true)) {
+          u_e.col(3) = hfunc2_sub.col(m - 1);
+        } else {
+          u_e.col(3) = hfunc1_sub.col(m - 1);
+        }
+      }
+
+      edge_copula->fit(u_e, bicop_controls);
+
+      // h-functions are only evaluated if needed in next tree
+      if (rvine_structure_.needed_hfunc1(tree, edge)) {
+        hfunc1.col(edge) = edge_copula->hfunc1(u_e);
+        if (var_types[1] == "d") {
+          u_e_sub = u_e;
+          u_e_sub.col(1) = u_e.col(3);
+          hfunc1_sub.col(edge) = edge_copula->hfunc1(u_e_sub);
+        }
+      }
+      if (rvine_structure_.needed_hfunc2(tree, edge)) {
+        hfunc2.col(edge) = edge_copula->hfunc2(u_e);
+        if (var_types[0] == "d") {
+          u_e_sub = u_e;
+          u_e_sub.col(0) = u_e.col(2);
+          hfunc2_sub.col(edge) = edge_copula->hfunc2(u_e_sub);
+        }
+      }
+    };
+
+    pool.map(fit_edge, tools_stl::seq_int(0, d_ - tree - 1));
+    pool.wait();
+  }
+
+  pool.join();
+}
+
 //! @name Getters and setters
 //! @{
 
@@ -734,7 +834,7 @@ Vinecop::get_var_types() const
 
 //! @brief Evaluates the copula density.
 //!
-//! The copula density is defined as joint density divided by marginal 
+//! The copula density is defined as joint density divided by marginal
 //! densities, irrespective of variable types.
 //!
 //! @param u An \f$ n \times (d + k) \f$ or \f$ n \times 2d \f$ matrix of
@@ -838,6 +938,7 @@ Vinecop::pdf(Eigen::MatrixXd u, const size_t num_threads) const
 
   return pdf;
 }
+
 
 //! @brief Evaluates the copula distribution.
 //!

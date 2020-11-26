@@ -74,6 +74,10 @@ public:
     const Eigen::MatrixXd& data,
     const FitControlsVinecop& controls = FitControlsVinecop());
 
+  void fit_parameters(
+    const Eigen::MatrixXd& data,
+    const FitControlsVinecop& controls = FitControlsVinecop());
+
   // Getters for a single pair copula
   Bicop get_pair_copula(size_t tree, size_t edge) const;
 

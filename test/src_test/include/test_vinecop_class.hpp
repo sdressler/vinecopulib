@@ -269,6 +269,22 @@ TEST_F(VinecopTest, aic_bic_are_correct)
   ASSERT_TRUE(true_model.bic(data) < complex_model.bic(data));
 }
 
+TEST_F(VinecopTest, fit_parameters_is_correct)
+{
+  u.conservativeResize(50, 7);
+  auto controls = FitControlsVinecop({ BicopFamily::clayton }, "itau");
+  Vinecop vc(7);
+  vc.select(u, controls);
+
+  auto pcs = vc.get_all_pair_copulas();
+  for (auto& pc : pcs[0])
+    pc.set_parameters(Eigen::VectorXd::Constant(1, 1));
+  Vinecop vc2(vc.get_rvine_structure(), pcs);
+  vc2.fit_parameters(u, controls);
+
+  ASSERT_TRUE(vc.str() == vc2.str());
+}
+
 TEST_F(VinecopTest, family_select_finds_true_rotations)
 {
   auto pair_copulas = Vinecop::make_pair_copula_store(7);
